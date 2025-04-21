@@ -6,6 +6,7 @@ use futures::executor::block_on;
 #[cfg(target_arch="wasm32")]
 use wasm_bindgen::prelude::*;
 
+use winit::dpi::LogicalSize;
 use winit::window::{Window, WindowAttributes, WindowId};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -35,13 +36,9 @@ impl<'a> GfxState<'a> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             backend_options: wgpu::BackendOptions::default(),
-            flags: wgpu::InstanceFlags::all()
+            flags: wgpu::InstanceFlags::default()
         });
 
-        // # Safety
-        //
-        // The surface needs to live as long as the window that created it.
-        // State owns the window so this should be safe.
         let surface = instance.create_surface(window.clone()).expect("Cannot create surface");
         for adapter in instance.enumerate_adapters(wgpu::Backends::all()) {
             log::info!("Available adapter: {:?}", adapter.get_info());
@@ -228,8 +225,32 @@ struct WindowGfxState<'a> {
 impl<'a> WindowGfxState<'a> {
     fn new(event_loop: &ActiveEventLoop) -> Self {
         let window = Arc::new(event_loop
-            .create_window(WindowAttributes::default().with_title("Rusty Cubes"))
+            .create_window(
+                WindowAttributes::default()
+                    .with_title("Rusty Cubes")
+                    .with_inner_size(LogicalSize::new(800, 800))
+            )
             .expect("Cannot create window"));
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            // Winit prevents sizing with CSS, so we have to set
+            // the size manually when on web.
+            use winit::dpi::PhysicalSize;
+            let _ = window.request_inner_size(PhysicalSize::new(800, 800));
+            
+            use winit::platform::web::WindowExtWebSys;
+            web_sys::window()
+                .and_then(|win| win.document())
+                .and_then(|doc| {
+                    let dst = doc.get_element_by_id("rustycubes")?;
+                    let canvas = web_sys::Element::from(window.canvas()?);
+                    dst.append_child(&canvas).ok()?;
+                    Some(())
+                })
+                .expect("Couldn't append canvas to document body.");
+        }
+            
         let gfx_state = block_on(GfxState::new(window.clone()));
 
         Self {
@@ -345,47 +366,4 @@ pub fn run() {
     let mut app = Application::default();
 
     event_loop.run_app(&mut app).expect("Cannot run app");
-
-    // event_loop.run(move |event, _, control_flow| match event {
-    //     Event::WindowEvent {
-    //         ref event,
-    //         window_id,
-    //     } if window_id == window.id() && !state.input(event) => match event {
-    //         WindowEvent::CloseRequested | WindowEvent::KeyboardInput {
-    //             input:
-    //                 KeyboardInput {
-    //                     state: ElementState::Pressed,
-    //                     virtual_keycode: Some(VirtualKeyCode::Escape),
-    //                     ..
-    //                 },
-    //             ..
-    //         } => *control_flow = ControlFlow::Exit,
-    //         WindowEvent::Resized(physical_size) => {
-    //             state.resize(*physical_size);
-    //         },
-    //         WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-    //             // new_inner_size is &&mut so we have to dereference it twice
-    //             state.resize(**new_inner_size)
-    //         },
-    //         _ => {}
-    //     },
-    //     Event::RedrawRequested(window_id) if window_id == state.window().id() => {
-    //         state.update();
-    //         match state.render() {
-    //             Ok(_) => {}
-    //             // Reconfigure the surface if lost
-    //             Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-    //             // The system is out of memory, we should probably quit
-    //             Err(wgpu::SurfaceError::OutOfMemory) => *control_flow = ControlFlow::Exit,
-    //             // All other errors (Outdated, Timeout) should be resolved by the next frame
-    //             Err(e) => log::error!("{:?}", e),
-    //         }
-    //     },
-    //     Event::MainEventsCleared => {
-    //         // RedrawRequested will only trigger once, unless we manually
-    //         // request it.
-    //         state.window().request_redraw();
-    //     },
-    //     _ => {}
-    // });
 }
