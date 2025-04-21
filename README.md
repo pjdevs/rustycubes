@@ -6,7 +6,7 @@ RustyCubes is a Rust-based project designed to explore and implement 3D cube-rel
 
 - [x] Written entirely in Rust for performance and safety
 - [x] Uses WGPU
-- [] Generate voxel terrains
+- [ ] Generate voxel terrains
 
 ## Getting Started
 
