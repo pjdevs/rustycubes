@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
 use log::{error, info, warn};
-use futures::executor::block_on;
 
 #[cfg(target_arch="wasm32")]
 use wasm_bindgen::prelude::*;
+
+#[cfg(target_arch="wasm32")]
+use winit::platform::web::EventLoopExtWebSys;
 
 use winit::dpi::LogicalSize;
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -20,16 +22,14 @@ struct GfxState<'a> {
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
     render_pipeline: wgpu::RenderPipeline,
-    // The window must be declared after the surface so
-    // it gets dropped after it as the surface contains
-    // unsafe references to the window's resources.
-    //window: Window,
+    window: Arc<Window>,
 }
 
 impl<'a> GfxState<'a> {
     // Creating some of the wgpu types requires async code
-    async fn new(window: Arc<Window>) -> Self {
+    async fn new(window: Window) -> Self {
         let size = window.inner_size();
+        let window = Arc::new(window);
 
         // The instance is a handle to our GPU
         // Backends::all => Vulkan + Metal + DX12 + Browser WebGPU
@@ -152,13 +152,9 @@ impl<'a> GfxState<'a> {
             config,
             size,
             render_pipeline,
-            // window
+            window,
         };
     }
-
-    // pub fn window(&self) -> &Window {
-    //     &self.window
-    // }
 
     fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
@@ -217,20 +213,29 @@ impl<'a> GfxState<'a> {
     }
 }
 
-struct WindowGfxState<'a> {
-    window: Arc<Window>,
-    gfx_state: GfxState<'a>
+struct Application<'a> {
+    gfx_state: Option<GfxState<'a>>,
 }
 
-impl<'a> WindowGfxState<'a> {
-    fn new(event_loop: &ActiveEventLoop) -> Self {
-        let window = Arc::new(event_loop
+impl Application<'_> {
+    async fn new() -> Self {
+        Self {
+            gfx_state: GfxState::new()
+        }
+    }
+}
+
+impl<'a> ApplicationHandler for Application<'a> {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        info!("Resumed.");
+        
+        let window = event_loop
             .create_window(
                 WindowAttributes::default()
                     .with_title("Rusty Cubes")
                     .with_inner_size(LogicalSize::new(800, 800))
             )
-            .expect("Cannot create window"));
+            .expect("Cannot create window");
 
         #[cfg(target_arch = "wasm32")]
         {
@@ -251,25 +256,9 @@ impl<'a> WindowGfxState<'a> {
                 .expect("Couldn't append canvas to document body.");
         }
             
-        let gfx_state = block_on(GfxState::new(window.clone()));
+        let gfx_state = GfxState::new(window.into());
 
-        Self {
-            window,
-            gfx_state
-        }
-    }
-}
-
-#[derive(Default)]
-struct Application<'a> {
-    state: Option<WindowGfxState<'a>>,
-}
-
-impl<'a> ApplicationHandler for Application<'a> {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        info!("Resumed.");
-        
-        self.state = Some(WindowGfxState::new(event_loop));
+        self.gfx_state = Some(gfx_state);
     }
 
     fn window_event(
@@ -278,11 +267,11 @@ impl<'a> ApplicationHandler for Application<'a> {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let Some(state) = &mut self.state else {
+        let Some(state) = &mut self.gfx_state else {
             return;
         };
 
-        if window_id == state.window.id() && !state.gfx_state.input(&event) {
+        if window_id == state.window.id() && !state.input(&event) {
             match event {
                 WindowEvent::CloseRequested | WindowEvent::KeyboardInput {
                     event: KeyEvent {
@@ -293,7 +282,7 @@ impl<'a> ApplicationHandler for Application<'a> {
                     ..
                 } => event_loop.exit(),
                 WindowEvent::Resized(physical_size) => {
-                    state.gfx_state.resize(physical_size);
+                    state.resize(physical_size);
                 },
                 WindowEvent::ScaleFactorChanged { .. } => {
                     // do not handle scale factor for now
@@ -301,12 +290,12 @@ impl<'a> ApplicationHandler for Application<'a> {
                 WindowEvent::RedrawRequested if window_id == state.window.id() => {
                     info!("Loop");
 
-                    state.gfx_state.update();
+                    state.update();
 
-                    match state.gfx_state.render() {
+                    match state.render() {
                         Ok(_) => {}
                         // Reconfigure the surface if lost
-                        Err(wgpu::SurfaceError::Lost) => state.gfx_state.resize(state.gfx_state.size),
+                        Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
                         // The system is out of memory, we should probably quit
                         Err(wgpu::SurfaceError::OutOfMemory) => {
                             error!("Out of memory. Cannot render.");
@@ -346,7 +335,7 @@ impl<'a> ApplicationHandler for Application<'a> {
 }
 
 #[cfg_attr(target_arch="wasm32", wasm_bindgen(start))]
-pub fn run() {
+pub async fn run() {
     cfg_if::cfg_if! {
         if #[cfg(target_arch = "wasm32")] {
             std::panic::set_hook(Box::new(console_error_panic_hook::hook));
@@ -363,7 +352,13 @@ pub fn run() {
     // Continuously run the event loop
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
 
-    let mut app = Application::default();
+    let mut app = Application::new().await;
 
-    event_loop.run_app(&mut app).expect("Cannot run app");
+    cfg_if::cfg_if! {
+        if #[cfg(target_arch = "wasm32")] {
+            event_loop.spawn_app(&mut app).expect("Cannot run app");
+        } else {
+            event_loop.run_app(&mut app).expect("Cannot run app");
+        }
+    }
 }
