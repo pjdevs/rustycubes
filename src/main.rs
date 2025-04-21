@@ -1,4 +1,4 @@
-use rustycubes::run;
+use librustycubes::run;
 
 fn main() {
     run()
